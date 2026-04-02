@@ -1,13 +1,12 @@
 // ============================================================
 // BRANDED PRESENTATION BUILDER — app.js
+// Upload a branded .pptx → paste content → download branded presentation
 // ============================================================
 
 // ---- State ----
 let brands = JSON.parse(localStorage.getItem('pptx-brands') || '[]');
-let activeBrand = null;   // the brand object currently in use
-let slides = [];           // array of slide objects
-let editingIndex = -1;     // index of slide being edited, -1 = new
-let dragSrcIndex = null;
+let activeBrand = null;
+let parsedSlides = [];
 
 // ---- DOM refs ----
 const $ = (sel) => document.querySelector(sel);
@@ -18,40 +17,23 @@ const stepEls = $$('.step');
 const panels = { 1: $('#step1'), 2: $('#step2'), 3: $('#step3') };
 
 // Step 1
+const dropZone = $('#drop-zone');
+const pptxUpload = $('#pptx-upload');
+const extractStatus = $('#extract-status');
+const brandPreview = $('#brand-preview');
 const brandNameInput = $('#brand-name');
-const primaryColor = $('#primary-color');
-const secondaryColor = $('#secondary-color');
-const accentColor = $('#accent-color');
-const textColor = $('#text-color');
-const bgColor = $('#bg-color');
-const brandFont = $('#brand-font');
-const brandLogo = $('#brand-logo');
-const logoPreview = $('#logo-preview');
-const logoPreviewContainer = $('#logo-preview-container');
 const savedBrandsList = $('#saved-brands-list');
 const saveBrandBtn = $('#save-brand-btn');
 const useBrandBtn = $('#use-brand-btn');
-const brandFormTitle = $('#brand-form-title');
-
-// Color hex labels
-const hexLabels = {
-    'primary-color': $('#primary-hex'),
-    'secondary-color': $('#secondary-hex'),
-    'accent-color': $('#accent-hex'),
-    'text-color': $('#text-hex'),
-    'bg-color': $('#bg-hex'),
-};
+const manualLogo = $('#manual-logo');
 
 // Step 2
-const slideTypeButtons = $$('.slide-type-btn');
-const slideEditor = $('#slide-editor');
-const slideEditorTitle = $('#slide-editor-title');
-const slideFields = $('#slide-fields');
-const slideDoneBtn = $('#slide-done-btn');
-const slideCancelBtn = $('#slide-cancel-btn');
-const slidesList = $('#slides-list');
-const goToStep3Btn = $('#go-to-step3');
+const contentInput = $('#content-input');
+const parsedPreviewEl = $('#parsed-preview');
+const generateBtn = $('#generate-btn');
 const activeBrandBadge = $('#active-brand-badge');
+const formatGuideToggle = $('#format-guide-toggle');
+const formatGuideBody = $('#format-guide-body');
 
 // Step 3
 const previewContainer = $('#preview-container');
@@ -72,51 +54,335 @@ function goToStep(n) {
         if (s === n) el.classList.add('active');
         else if (s < n) el.classList.add('done');
     });
-    if (n === 2) renderSlidesList();
     if (n === 3) renderPreview();
 }
 
 $('#back-to-step1').addEventListener('click', () => goToStep(1));
-$('#go-to-step3').addEventListener('click', () => goToStep(3));
 $('#back-to-step2').addEventListener('click', () => goToStep(2));
 
 // ============================================================
-// STEP 1 — BRAND MANAGEMENT
+// STEP 1 — BRAND EXTRACTION FROM .PPTX
 // ============================================================
 
-// -- Color hex sync --
-['primary-color', 'secondary-color', 'accent-color', 'text-color', 'bg-color'].forEach(id => {
-    const input = document.getElementById(id);
-    input.addEventListener('input', () => {
-        hexLabels[id].textContent = input.value.toUpperCase();
-    });
+// -- Drop zone events --
+dropZone.addEventListener('click', () => pptxUpload.click());
+
+dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
 });
 
-// -- Logo handling --
-let logoDataURL = null;
+dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('drag-over');
+});
 
-brandLogo.addEventListener('change', (e) => {
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.endsWith('.pptx')) {
+        handlePptxUpload(file);
+    }
+});
+
+pptxUpload.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) handlePptxUpload(file);
+});
+
+// -- Manual logo upload --
+manualLogo.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-        logoDataURL = ev.target.result;
-        logoPreview.src = logoDataURL;
-        logoPreviewContainer.classList.remove('hidden');
-    };
-    reader.readAsDataURL(file);
+    const dataUrl = await fileToDataURL(file);
+    const logoBox = $('#extracted-logo-box');
+    logoBox.innerHTML = `<img src="${dataUrl}" alt="Logo">`;
+    logoBox.dataset.logo = dataUrl;
 });
 
-$('#remove-logo').addEventListener('click', () => {
-    logoDataURL = null;
-    brandLogo.value = '';
-    logoPreviewContainer.classList.add('hidden');
+// -- Extract branding from uploaded .pptx --
+async function handlePptxUpload(file) {
+    extractStatus.classList.remove('hidden');
+    brandPreview.classList.add('hidden');
+
+    try {
+        const brand = await extractBrandFromPptx(file);
+        showBrandPreview(brand);
+    } catch (err) {
+        console.error('Extraction error:', err);
+        alert('Could not read branding from this file. Please try a different .pptx file.');
+    }
+
+    extractStatus.classList.add('hidden');
+}
+
+async function extractBrandFromPptx(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuffer);
+
+    const brand = {
+        name: file.name.replace('.pptx', '').replace(/[_-]/g, ' '),
+        primaryColor: '#2563EB',
+        secondaryColor: '#1E40AF',
+        accentColor: '#F59E0B',
+        textColor: '#1F2937',
+        bgColor: '#FFFFFF',
+        headingFont: 'Calibri Light',
+        bodyFont: 'Calibri',
+        logo: null,
+    };
+
+    // 1. Extract theme colors and fonts
+    const themeFile = zip.file('ppt/theme/theme1.xml');
+    if (themeFile) {
+        const themeXml = await themeFile.async('string');
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(themeXml, 'application/xml');
+
+        // Extract colors
+        const colors = extractThemeColors(doc, themeXml);
+        if (colors.accent1) brand.primaryColor = colors.accent1;
+        if (colors.accent2) brand.secondaryColor = colors.accent2;
+        if (colors.accent3) brand.accentColor = colors.accent3;
+        if (colors.dk1) brand.textColor = colors.dk1;
+        if (colors.lt1) brand.bgColor = colors.lt1;
+
+        // Extract fonts
+        const fonts = extractThemeFonts(doc, themeXml);
+        if (fonts.major) brand.headingFont = fonts.major;
+        if (fonts.minor) brand.bodyFont = fonts.minor;
+    }
+
+    // 2. Extract logo from slide master
+    const logo = await extractLogo(zip);
+    if (logo) brand.logo = logo;
+
+    return brand;
+}
+
+function extractThemeColors(doc, xmlString) {
+    const colors = {};
+    const colorNames = ['dk1', 'dk2', 'lt1', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'];
+
+    // Try namespace-aware approach first
+    const NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+    let clrScheme = doc.getElementsByTagNameNS(NS, 'clrScheme')[0];
+
+    if (clrScheme) {
+        for (const child of clrScheme.children) {
+            const name = child.localName;
+            if (colorNames.includes(name)) {
+                const hex = getColorFromNode(child);
+                if (hex) colors[name] = '#' + hex;
+            }
+        }
+    }
+
+    // Fallback: regex extraction from raw XML
+    if (Object.keys(colors).length === 0) {
+        for (const name of colorNames) {
+            // Match <a:accent1><a:srgbClr val="RRGGBB"/></a:accent1>
+            const srgbMatch = xmlString.match(new RegExp(`<a:${name}>\\s*<a:srgbClr val="([A-Fa-f0-9]{6})"`, 'i'));
+            if (srgbMatch) {
+                colors[name] = '#' + srgbMatch[1];
+                continue;
+            }
+            // Match <a:dk1><a:sysClr ... lastClr="RRGGBB"/></a:dk1>
+            const sysMatch = xmlString.match(new RegExp(`<a:${name}>\\s*<a:sysClr[^>]*lastClr="([A-Fa-f0-9]{6})"`, 'i'));
+            if (sysMatch) {
+                colors[name] = '#' + sysMatch[1];
+            }
+        }
+    }
+
+    return colors;
+}
+
+function getColorFromNode(parentNode) {
+    for (const child of parentNode.children) {
+        if (child.localName === 'srgbClr') {
+            return child.getAttribute('val');
+        }
+        if (child.localName === 'sysClr') {
+            return child.getAttribute('lastClr');
+        }
+    }
+    return null;
+}
+
+function extractThemeFonts(doc, xmlString) {
+    const fonts = {};
+    const NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+
+    // Try namespace-aware
+    const majorFonts = doc.getElementsByTagNameNS(NS, 'majorFont');
+    const minorFonts = doc.getElementsByTagNameNS(NS, 'minorFont');
+
+    if (majorFonts.length > 0) {
+        const latin = majorFonts[0].getElementsByTagNameNS(NS, 'latin')[0];
+        if (latin) fonts.major = latin.getAttribute('typeface');
+    }
+    if (minorFonts.length > 0) {
+        const latin = minorFonts[0].getElementsByTagNameNS(NS, 'latin')[0];
+        if (latin) fonts.minor = latin.getAttribute('typeface');
+    }
+
+    // Fallback: regex
+    if (!fonts.major) {
+        const majorMatch = xmlString.match(/<a:majorFont>[\s\S]*?<a:latin typeface="([^"]+)"/i);
+        if (majorMatch) fonts.major = majorMatch[1];
+    }
+    if (!fonts.minor) {
+        const minorMatch = xmlString.match(/<a:minorFont>[\s\S]*?<a:latin typeface="([^"]+)"/i);
+        if (minorMatch) fonts.minor = minorMatch[1];
+    }
+
+    return fonts;
+}
+
+async function extractLogo(zip) {
+    // Strategy: find images referenced in the slide master
+    const masterRelsFile = zip.file('ppt/slideMasters/_rels/slideMaster1.xml.rels');
+    if (!masterRelsFile) return null;
+
+    const relsXml = await masterRelsFile.async('string');
+    // Find all image relationships
+    const imageRefs = [];
+    const regex = /Target="\.\.\/media\/([^"]+)"/g;
+    let match;
+    while ((match = regex.exec(relsXml)) !== null) {
+        imageRefs.push(match[1]);
+    }
+
+    if (imageRefs.length === 0) {
+        // Try slide layouts too
+        return await extractLogoFromLayouts(zip);
+    }
+
+    // Pick the best logo candidate (smallest file = likely a logo, not a background)
+    let bestLogo = null;
+    let smallestSize = Infinity;
+
+    for (const filename of imageRefs) {
+        const mediaFile = zip.file('ppt/media/' + filename);
+        if (!mediaFile) continue;
+
+        const data = await mediaFile.async('arraybuffer');
+        if (data.byteLength < smallestSize && data.byteLength > 100) {
+            smallestSize = data.byteLength;
+            const ext = filename.split('.').pop().toLowerCase();
+            const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml' };
+            const mime = mimeMap[ext] || 'image/png';
+            if (mime.startsWith('image/')) {
+                bestLogo = arrayBufferToDataURL(data, mime);
+            }
+        }
+    }
+
+    return bestLogo;
+}
+
+async function extractLogoFromLayouts(zip) {
+    // Check first few slide layouts for images
+    for (let i = 1; i <= 3; i++) {
+        const relsFile = zip.file(`ppt/slideLayouts/_rels/slideLayout${i}.xml.rels`);
+        if (!relsFile) continue;
+
+        const relsXml = await relsFile.async('string');
+        const match = relsXml.match(/Target="\.\.\/media\/([^"]+)"/);
+        if (match) {
+            const mediaFile = zip.file('ppt/media/' + match[1]);
+            if (mediaFile) {
+                const data = await mediaFile.async('arraybuffer');
+                const ext = match[1].split('.').pop().toLowerCase();
+                const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif' };
+                const mime = mimeMap[ext] || 'image/png';
+                return arrayBufferToDataURL(data, mime);
+            }
+        }
+    }
+    return null;
+}
+
+function arrayBufferToDataURL(buffer, mime) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return 'data:' + mime + ';base64,' + btoa(binary);
+}
+
+// -- Show extracted brand in the UI --
+function showBrandPreview(brand) {
+    $('#ex-primary').value = brand.primaryColor;
+    $('#ex-secondary').value = brand.secondaryColor;
+    $('#ex-accent').value = brand.accentColor;
+    $('#ex-text').value = brand.textColor;
+    $('#ex-bg').value = brand.bgColor;
+    $('#ex-heading-font').value = brand.headingFont;
+    $('#ex-body-font').value = brand.bodyFont;
+    brandNameInput.value = brand.name;
+
+    const logoBox = $('#extracted-logo-box');
+    if (brand.logo) {
+        logoBox.innerHTML = `<img src="${brand.logo}" alt="Logo">`;
+        logoBox.dataset.logo = brand.logo;
+    } else {
+        logoBox.innerHTML = '<span class="no-logo-text">No logo found</span>';
+        logoBox.dataset.logo = '';
+    }
+
+    brandPreview.classList.remove('hidden');
+}
+
+function getBrandFromPreview() {
+    const name = brandNameInput.value.trim();
+    if (!name) { alert('Please enter a brand name.'); return null; }
+    const logoBox = $('#extracted-logo-box');
+    return {
+        name,
+        primaryColor: $('#ex-primary').value,
+        secondaryColor: $('#ex-secondary').value,
+        accentColor: $('#ex-accent').value,
+        textColor: $('#ex-text').value,
+        bgColor: $('#ex-bg').value,
+        headingFont: $('#ex-heading-font').value || 'Calibri',
+        bodyFont: $('#ex-body-font').value || 'Calibri',
+        logo: logoBox.dataset.logo || null,
+    };
+}
+
+// -- Save / Use brand --
+saveBrandBtn.addEventListener('click', () => {
+    const b = getBrandFromPreview();
+    if (!b) return;
+    const existingIdx = brands.findIndex(x => x.name.toLowerCase() === b.name.toLowerCase());
+    if (existingIdx >= 0) {
+        brands[existingIdx] = b;
+    } else {
+        brands.push(b);
+    }
+    persistBrands();
+    renderBrands();
 });
+
+useBrandBtn.addEventListener('click', () => {
+    const b = getBrandFromPreview();
+    if (!b) return;
+    activeBrand = b;
+    activeBrandBadge.textContent = activeBrand.name;
+    goToStep(2);
+});
+
+function persistBrands() {
+    localStorage.setItem('pptx-brands', JSON.stringify(brands));
+}
 
 // -- Render saved brands --
 function renderBrands() {
     if (brands.length === 0) {
-        savedBrandsList.innerHTML = '<p class="no-brands">No saved brands yet. Create one below!</p>';
+        savedBrandsList.innerHTML = '<p class="no-brands">No saved brands yet. Upload a .pptx to get started!</p>';
         return;
     }
     savedBrandsList.innerHTML = brands.map((b, i) => `
@@ -128,14 +394,16 @@ function renderBrands() {
                 <div class="brand-card-swatch" style="background:${b.secondaryColor}"></div>
                 <div class="brand-card-swatch" style="background:${b.accentColor}"></div>
             </div>
+            ${b.logo ? `<img class="brand-card-logo" src="${b.logo}" alt="Logo">` : ''}
         </div>
     `).join('');
 
-    // Click to load
+    // Click to load brand
     savedBrandsList.querySelectorAll('.brand-card').forEach(card => {
         card.addEventListener('click', (e) => {
             if (e.target.classList.contains('brand-card-delete')) return;
-            loadBrandIntoForm(brands[parseInt(card.dataset.index)]);
+            const b = brands[parseInt(card.dataset.index)];
+            showBrandPreview(b);
         });
     });
 
@@ -143,295 +411,191 @@ function renderBrands() {
     savedBrandsList.querySelectorAll('.brand-card-delete').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const idx = parseInt(btn.dataset.index);
-            brands.splice(idx, 1);
+            brands.splice(parseInt(btn.dataset.index), 1);
             persistBrands();
             renderBrands();
         });
     });
 }
 
-function loadBrandIntoForm(b) {
-    brandNameInput.value = b.name;
-    primaryColor.value = b.primaryColor;
-    secondaryColor.value = b.secondaryColor;
-    accentColor.value = b.accentColor;
-    textColor.value = b.textColor;
-    bgColor.value = b.bgColor;
-    brandFont.value = b.font;
-    logoDataURL = b.logo || null;
-    if (logoDataURL) {
-        logoPreview.src = logoDataURL;
-        logoPreviewContainer.classList.remove('hidden');
-    } else {
-        logoPreviewContainer.classList.add('hidden');
-    }
-    // Update hex labels
-    Object.keys(hexLabels).forEach(id => {
-        hexLabels[id].textContent = document.getElementById(id).value.toUpperCase();
-    });
-    brandFormTitle.textContent = 'Edit Brand';
-}
-
-function getBrandFromForm() {
-    const name = brandNameInput.value.trim();
-    if (!name) { alert('Please enter a brand name.'); return null; }
-    return {
-        name,
-        primaryColor: primaryColor.value,
-        secondaryColor: secondaryColor.value,
-        accentColor: accentColor.value,
-        textColor: textColor.value,
-        bgColor: bgColor.value,
-        font: brandFont.value,
-        logo: logoDataURL,
-    };
-}
-
-function persistBrands() {
-    localStorage.setItem('pptx-brands', JSON.stringify(brands));
-}
-
-saveBrandBtn.addEventListener('click', () => {
-    const b = getBrandFromForm();
-    if (!b) return;
-    const existingIdx = brands.findIndex(x => x.name.toLowerCase() === b.name.toLowerCase());
-    if (existingIdx >= 0) {
-        brands[existingIdx] = b;
-    } else {
-        brands.push(b);
-    }
-    persistBrands();
-    renderBrands();
-    brandFormTitle.textContent = 'Edit Brand';
-});
-
-useBrandBtn.addEventListener('click', () => {
-    const b = getBrandFromForm();
-    if (!b) return;
-    activeBrand = b;
-    activeBrandBadge.textContent = activeBrand.name;
-    goToStep(2);
-});
-
 renderBrands();
 
 // ============================================================
-// STEP 2 — SLIDE BUILDER
+// STEP 2 — CONTENT PARSING
 // ============================================================
 
-const slideTemplates = {
-    'title': {
-        label: 'Title Slide',
-        fields: [
-            { key: 'title', label: 'Title', type: 'text', placeholder: 'Presentation Title' },
-            { key: 'subtitle', label: 'Subtitle', type: 'text', placeholder: 'Your name or tagline' },
-        ]
-    },
-    'content': {
-        label: 'Content Slide',
-        fields: [
-            { key: 'heading', label: 'Heading', type: 'text', placeholder: 'Slide heading' },
-            { key: 'body', label: 'Body Text', type: 'textarea', placeholder: 'Write your content here...' },
-        ]
-    },
-    'bullets': {
-        label: 'Bullet Points',
-        fields: [
-            { key: 'heading', label: 'Heading', type: 'text', placeholder: 'Slide heading' },
-            { key: 'bullets', label: 'Bullet Points (one per line)', type: 'textarea', placeholder: 'First point\nSecond point\nThird point' },
-        ]
-    },
-    'two-column': {
-        label: 'Two Columns',
-        fields: [
-            { key: 'heading', label: 'Heading', type: 'text', placeholder: 'Slide heading' },
-            { key: 'left', label: 'Left Column', type: 'textarea', placeholder: 'Left side content...' },
-            { key: 'right', label: 'Right Column', type: 'textarea', placeholder: 'Right side content...' },
-        ]
-    },
-    'image': {
-        label: 'Image + Text',
-        fields: [
-            { key: 'heading', label: 'Heading', type: 'text', placeholder: 'Slide heading' },
-            { key: 'body', label: 'Text', type: 'textarea', placeholder: 'Description...' },
-            { key: 'image', label: 'Image', type: 'file' },
-        ]
-    },
-    'thank-you': {
-        label: 'Thank You',
-        fields: [
-            { key: 'title', label: 'Title', type: 'text', placeholder: 'Thank You!' },
-            { key: 'subtitle', label: 'Subtitle / Contact', type: 'text', placeholder: 'email@example.com' },
-        ]
-    },
-};
-
-// -- Open editor for a new slide type --
-slideTypeButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-        const type = btn.dataset.type;
-        editingIndex = -1;
-        openSlideEditor(type, {});
-    });
+// Format guide toggle
+formatGuideToggle.addEventListener('click', () => {
+    formatGuideBody.classList.toggle('hidden');
+    formatGuideToggle.classList.toggle('open');
 });
 
-function openSlideEditor(type, data) {
-    const tmpl = slideTemplates[type];
-    slideEditorTitle.textContent = editingIndex >= 0 ? `Edit: ${tmpl.label}` : `New: ${tmpl.label}`;
-    slideEditor.dataset.type = type;
-    slideFields.innerHTML = tmpl.fields.map(f => {
-        const val = data[f.key] || '';
-        if (f.type === 'textarea') {
-            return `<div class="form-group"><label>${f.label}</label><textarea data-key="${f.key}" placeholder="${f.placeholder}">${escapeHTML(val)}</textarea></div>`;
-        } else if (f.type === 'file') {
-            const hasImg = data[f.key] ? `<img src="${data[f.key]}" style="max-width:160px;max-height:90px;border-radius:6px;margin-top:6px;">` : '';
-            return `<div class="form-group"><label>${f.label}</label><input type="file" data-key="${f.key}" accept="image/*">${hasImg}</div>`;
-        } else {
-            return `<div class="form-group"><label>${f.label}</label><input type="text" data-key="${f.key}" value="${escapeHTML(val)}" placeholder="${f.placeholder}"></div>`;
+// Content input — parse as user types
+contentInput.addEventListener('input', () => {
+    parsedSlides = parseContent(contentInput.value);
+    renderParsedPreview();
+    generateBtn.disabled = parsedSlides.length === 0;
+});
+
+function parseContent(text) {
+    if (!text.trim()) return [];
+
+    // Split by --- separator
+    const sections = text.split(/\n---\n|\n---$|^---\n/);
+    const slides = [];
+
+    for (const section of sections) {
+        const trimmed = section.trim();
+        if (!trimmed) continue;
+
+        const lines = trimmed.split('\n');
+        const firstLine = lines[0].trim();
+
+        // Title slide: starts with single #
+        if (firstLine.startsWith('# ') && !firstLine.startsWith('## ')) {
+            const title = firstLine.replace(/^# /, '');
+            const subtitle = lines.slice(1).map(l => l.trim()).filter(l => l).join('\n');
+            slides.push({
+                type: isThankYou(title) ? 'thank-you' : 'title',
+                data: { title, subtitle }
+            });
+            continue;
         }
-    }).join('');
-    slideEditor.classList.remove('hidden');
-    // Focus first input
-    const firstInput = slideFields.querySelector('input[type="text"], textarea');
-    if (firstInput) firstInput.focus();
+
+        // Content/bullet slides: starts with ##
+        if (firstLine.startsWith('## ')) {
+            const heading = firstLine.replace(/^## /, '');
+            const bodyLines = lines.slice(1).map(l => l.trim()).filter(l => l);
+
+            // Check for two-column format
+            const bodyText = bodyLines.join('\n');
+            if (bodyText.includes('LEFT:') && bodyText.includes('RIGHT:')) {
+                const leftMatch = bodyText.match(/LEFT:\s*([\s\S]*?)(?=RIGHT:)/i);
+                const rightMatch = bodyText.match(/RIGHT:\s*([\s\S]*)/i);
+                slides.push({
+                    type: 'two-column',
+                    data: {
+                        heading,
+                        left: leftMatch ? leftMatch[1].trim() : '',
+                        right: rightMatch ? rightMatch[1].trim() : '',
+                    }
+                });
+                continue;
+            }
+
+            // Check if all body lines are bullets
+            const allBullets = bodyLines.length > 0 && bodyLines.every(l => l.startsWith('- ') || l.startsWith('* '));
+            if (allBullets) {
+                slides.push({
+                    type: 'bullets',
+                    data: {
+                        heading,
+                        bullets: bodyLines.map(l => l.replace(/^[-*] /, '')).join('\n'),
+                    }
+                });
+            } else {
+                slides.push({
+                    type: 'content',
+                    data: {
+                        heading,
+                        body: bodyLines.join('\n'),
+                    }
+                });
+            }
+            continue;
+        }
+
+        // Plain text without heading — treat as content slide
+        slides.push({
+            type: 'content',
+            data: {
+                heading: '',
+                body: trimmed,
+            }
+        });
+    }
+
+    return slides;
 }
 
-slideCancelBtn.addEventListener('click', () => {
-    slideEditor.classList.add('hidden');
-    editingIndex = -1;
-});
+function isThankYou(text) {
+    const lower = text.toLowerCase();
+    return lower.includes('thank') || lower.includes('questions') || lower.includes('q&a') || lower.includes('the end');
+}
 
-slideDoneBtn.addEventListener('click', async () => {
-    const type = slideEditor.dataset.type;
-    const tmpl = slideTemplates[type];
-    const data = {};
-    for (const f of tmpl.fields) {
-        const el = slideFields.querySelector(`[data-key="${f.key}"]`);
-        if (f.type === 'file') {
-            if (el.files && el.files[0]) {
-                data[f.key] = await fileToDataURL(el.files[0]);
-            } else if (editingIndex >= 0 && slides[editingIndex].data[f.key]) {
-                data[f.key] = slides[editingIndex].data[f.key];
-            }
-        } else {
-            data[f.key] = el.value;
-        }
-    }
-    if (editingIndex >= 0) {
-        slides[editingIndex] = { type, data };
-    } else {
-        slides.push({ type, data });
-    }
-    editingIndex = -1;
-    slideEditor.classList.add('hidden');
-    renderSlidesList();
-});
-
-function renderSlidesList() {
-    goToStep3Btn.disabled = slides.length === 0;
-    if (slides.length === 0) {
-        slidesList.innerHTML = '<p class="no-brands">No slides yet. Click a slide type above to add one.</p>';
+function renderParsedPreview() {
+    if (parsedSlides.length === 0) {
+        parsedPreviewEl.innerHTML = '';
         return;
     }
-    slidesList.innerHTML = slides.map((s, i) => {
-        const tmpl = slideTemplates[s.type];
-        const title = s.data.title || s.data.heading || tmpl.label;
-        return `
-        <div class="slide-item" draggable="true" data-index="${i}">
-            <div class="slide-item-number">${i + 1}</div>
-            <div class="slide-item-info">
-                <div class="slide-item-type">${tmpl.label}</div>
-                <div class="slide-item-title">${escapeHTML(title)}</div>
-            </div>
-            <div class="slide-item-actions">
-                <button data-action="edit" data-index="${i}" title="Edit">&#9998;</button>
-                <button data-action="delete" data-index="${i}" title="Delete">&times;</button>
-            </div>
-        </div>`;
-    }).join('');
 
-    // Drag & drop
-    slidesList.querySelectorAll('.slide-item').forEach(item => {
-        item.addEventListener('dragstart', (e) => {
-            dragSrcIndex = parseInt(item.dataset.index);
-            item.classList.add('dragging');
-        });
-        item.addEventListener('dragend', () => item.classList.remove('dragging'));
-        item.addEventListener('dragover', (e) => e.preventDefault());
-        item.addEventListener('drop', (e) => {
-            e.preventDefault();
-            const destIndex = parseInt(item.dataset.index);
-            if (dragSrcIndex !== null && dragSrcIndex !== destIndex) {
-                const moved = slides.splice(dragSrcIndex, 1)[0];
-                slides.splice(destIndex, 0, moved);
-                renderSlidesList();
-            }
-            dragSrcIndex = null;
-        });
-    });
+    const typeLabels = {
+        'title': 'Title Slide',
+        'thank-you': 'Thank You',
+        'content': 'Content',
+        'bullets': 'Bullets',
+        'two-column': 'Two Columns',
+    };
 
-    // Edit / Delete buttons
-    slidesList.querySelectorAll('[data-action="edit"]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const idx = parseInt(btn.dataset.index);
-            editingIndex = idx;
-            openSlideEditor(slides[idx].type, slides[idx].data);
-        });
-    });
-    slidesList.querySelectorAll('[data-action="delete"]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            slides.splice(parseInt(btn.dataset.index), 1);
-            renderSlidesList();
-        });
-    });
+    parsedPreviewEl.innerHTML = `<p style="font-size:13px;font-weight:600;color:#475569;margin-bottom:8px;">${parsedSlides.length} slide${parsedSlides.length > 1 ? 's' : ''} detected:</p>` +
+        parsedSlides.map((s, i) => {
+            const title = s.data.title || s.data.heading || 'Untitled';
+            return `
+            <div class="parsed-slide-card">
+                <div class="parsed-slide-num">${i + 1}</div>
+                <div>
+                    <div class="parsed-slide-type">${typeLabels[s.type] || s.type}</div>
+                    <div class="parsed-slide-title">${escapeHTML(title)}</div>
+                </div>
+            </div>`;
+        }).join('');
 }
+
+// Generate button
+generateBtn.addEventListener('click', () => {
+    parsedSlides = parseContent(contentInput.value);
+    if (parsedSlides.length > 0) {
+        goToStep(3);
+    }
+});
 
 // ============================================================
 // STEP 3 — PREVIEW & DOWNLOAD
 // ============================================================
 
 function renderPreview() {
-    previewContainer.innerHTML = slides.map((s, i) => {
-        const b = activeBrand;
+    const b = activeBrand;
+    previewContainer.innerHTML = parsedSlides.map((s, i) => {
         let inner = '';
 
         if (s.type === 'title' || s.type === 'thank-you') {
             inner = `
                 <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;">
-                    <div style="font-size:28px;font-weight:700;color:${b.primaryColor};font-family:${b.font};">${escapeHTML(s.data.title || '')}</div>
-                    <div style="font-size:16px;color:${b.textColor};margin-top:12px;font-family:${b.font};">${escapeHTML(s.data.subtitle || '')}</div>
+                    <div style="font-size:28px;font-weight:700;color:${b.primaryColor};font-family:'${b.headingFont}',sans-serif;">${escapeHTML(s.data.title || '')}</div>
+                    <div style="font-size:16px;color:${b.textColor};margin-top:12px;font-family:'${b.bodyFont}',sans-serif;">${escapeHTML(s.data.subtitle || '')}</div>
                 </div>`;
         } else if (s.type === 'content') {
             inner = `
-                <div style="font-size:22px;font-weight:700;color:${b.primaryColor};font-family:${b.font};margin-bottom:16px;">${escapeHTML(s.data.heading || '')}</div>
-                <div style="font-size:14px;color:${b.textColor};font-family:${b.font};white-space:pre-wrap;flex:1;">${escapeHTML(s.data.body || '')}</div>`;
+                <div style="font-size:22px;font-weight:700;color:${b.primaryColor};font-family:'${b.headingFont}',sans-serif;margin-bottom:16px;">${escapeHTML(s.data.heading || '')}</div>
+                <div style="font-size:14px;color:${b.textColor};font-family:'${b.bodyFont}',sans-serif;white-space:pre-wrap;flex:1;">${escapeHTML(s.data.body || '')}</div>`;
         } else if (s.type === 'bullets') {
             const bullets = (s.data.bullets || '').split('\n').filter(x => x.trim()).map(x => `<li>${escapeHTML(x)}</li>`).join('');
             inner = `
-                <div style="font-size:22px;font-weight:700;color:${b.primaryColor};font-family:${b.font};margin-bottom:16px;">${escapeHTML(s.data.heading || '')}</div>
-                <ul style="font-size:14px;color:${b.textColor};font-family:${b.font};padding-left:24px;flex:1;">${bullets}</ul>`;
+                <div style="font-size:22px;font-weight:700;color:${b.primaryColor};font-family:'${b.headingFont}',sans-serif;margin-bottom:16px;">${escapeHTML(s.data.heading || '')}</div>
+                <ul style="font-size:14px;color:${b.textColor};font-family:'${b.bodyFont}',sans-serif;padding-left:24px;flex:1;">${bullets}</ul>`;
         } else if (s.type === 'two-column') {
             inner = `
-                <div style="font-size:22px;font-weight:700;color:${b.primaryColor};font-family:${b.font};margin-bottom:16px;">${escapeHTML(s.data.heading || '')}</div>
+                <div style="font-size:22px;font-weight:700;color:${b.primaryColor};font-family:'${b.headingFont}',sans-serif;margin-bottom:16px;">${escapeHTML(s.data.heading || '')}</div>
                 <div style="display:flex;gap:24px;flex:1;">
-                    <div style="flex:1;font-size:13px;color:${b.textColor};font-family:${b.font};white-space:pre-wrap;">${escapeHTML(s.data.left || '')}</div>
-                    <div style="flex:1;font-size:13px;color:${b.textColor};font-family:${b.font};white-space:pre-wrap;">${escapeHTML(s.data.right || '')}</div>
-                </div>`;
-        } else if (s.type === 'image') {
-            const imgTag = s.data.image ? `<img src="${s.data.image}" style="max-width:45%;max-height:100%;border-radius:6px;object-fit:contain;">` : '';
-            inner = `
-                <div style="font-size:22px;font-weight:700;color:${b.primaryColor};font-family:${b.font};margin-bottom:16px;">${escapeHTML(s.data.heading || '')}</div>
-                <div style="display:flex;gap:24px;flex:1;align-items:center;">
-                    <div style="flex:1;font-size:13px;color:${b.textColor};font-family:${b.font};white-space:pre-wrap;">${escapeHTML(s.data.body || '')}</div>
-                    ${imgTag}
+                    <div style="flex:1;font-size:13px;color:${b.textColor};font-family:'${b.bodyFont}',sans-serif;white-space:pre-wrap;">${escapeHTML(s.data.left || '')}</div>
+                    <div style="flex:1;font-size:13px;color:${b.textColor};font-family:'${b.bodyFont}',sans-serif;white-space:pre-wrap;">${escapeHTML(s.data.right || '')}</div>
                 </div>`;
         }
 
         const logoTag = b.logo ? `<img class="preview-slide-logo" src="${b.logo}">` : '';
 
         return `
-        <div class="preview-slide" style="background:${b.bgColor};font-family:${b.font};border-top:6px solid ${b.primaryColor};">
+        <div class="preview-slide" style="background:${b.bgColor};font-family:'${b.bodyFont}',sans-serif;border-top:6px solid ${b.primaryColor};">
             <span class="preview-slide-number">Slide ${i + 1}</span>
             ${inner}
             ${logoTag}
@@ -446,10 +610,9 @@ downloadBtn.addEventListener('click', () => {
     pptx.layout = 'LAYOUT_WIDE';
     pptx.author = 'Branded Presentation Builder';
 
-    // Helper: hex to RRGGBB (no #)
     const hex = (c) => c.replace('#', '');
 
-    slides.forEach((s) => {
+    parsedSlides.forEach((s) => {
         const slide = pptx.addSlide();
         slide.background = { color: hex(b.bgColor) };
 
@@ -459,7 +622,7 @@ downloadBtn.addEventListener('click', () => {
             fill: { color: hex(b.primaryColor) },
         });
 
-        // Logo
+        // Logo on every slide
         if (b.logo) {
             slide.addImage({
                 data: b.logo,
@@ -472,39 +635,39 @@ downloadBtn.addEventListener('click', () => {
         if (s.type === 'title' || s.type === 'thank-you') {
             slide.addText(s.data.title || '', {
                 x: 0.8, y: 2.0, w: 11.5, h: 1.5,
-                fontSize: 36, fontFace: b.font,
+                fontSize: 36, fontFace: b.headingFont,
                 color: hex(b.primaryColor),
                 bold: true, align: 'center', valign: 'middle',
             });
             slide.addText(s.data.subtitle || '', {
                 x: 0.8, y: 3.5, w: 11.5, h: 1.0,
-                fontSize: 20, fontFace: b.font,
+                fontSize: 20, fontFace: b.bodyFont,
                 color: hex(b.textColor),
                 align: 'center', valign: 'top',
             });
         } else if (s.type === 'content') {
             slide.addText(s.data.heading || '', {
                 x: 0.8, y: 0.4, w: 11.5, h: 0.8,
-                fontSize: 28, fontFace: b.font,
+                fontSize: 28, fontFace: b.headingFont,
                 color: hex(b.primaryColor),
                 bold: true,
             });
             slide.addText(s.data.body || '', {
                 x: 0.8, y: 1.4, w: 11.5, h: 5.2,
-                fontSize: 16, fontFace: b.font,
+                fontSize: 16, fontFace: b.bodyFont,
                 color: hex(b.textColor),
                 valign: 'top',
             });
         } else if (s.type === 'bullets') {
             slide.addText(s.data.heading || '', {
                 x: 0.8, y: 0.4, w: 11.5, h: 0.8,
-                fontSize: 28, fontFace: b.font,
+                fontSize: 28, fontFace: b.headingFont,
                 color: hex(b.primaryColor),
                 bold: true,
             });
             const bulletItems = (s.data.bullets || '').split('\n').filter(x => x.trim()).map(text => ({
                 text,
-                options: { bullet: { type: 'bullet' }, fontSize: 16, fontFace: b.font, color: hex(b.textColor) },
+                options: { bullet: { type: 'bullet' }, fontSize: 16, fontFace: b.bodyFont, color: hex(b.textColor) },
             }));
             if (bulletItems.length > 0) {
                 slide.addText(bulletItems, {
@@ -515,47 +678,26 @@ downloadBtn.addEventListener('click', () => {
         } else if (s.type === 'two-column') {
             slide.addText(s.data.heading || '', {
                 x: 0.8, y: 0.4, w: 11.5, h: 0.8,
-                fontSize: 28, fontFace: b.font,
+                fontSize: 28, fontFace: b.headingFont,
                 color: hex(b.primaryColor),
                 bold: true,
             });
             slide.addText(s.data.left || '', {
                 x: 0.8, y: 1.4, w: 5.4, h: 5.2,
-                fontSize: 15, fontFace: b.font,
+                fontSize: 15, fontFace: b.bodyFont,
                 color: hex(b.textColor),
                 valign: 'top',
             });
-            // Divider line
             slide.addShape(pptx.ShapeType.line, {
                 x: 6.5, y: 1.4, w: 0, h: 5.0,
                 line: { color: hex(b.accentColor), width: 1 },
             });
             slide.addText(s.data.right || '', {
                 x: 6.9, y: 1.4, w: 5.4, h: 5.2,
-                fontSize: 15, fontFace: b.font,
+                fontSize: 15, fontFace: b.bodyFont,
                 color: hex(b.textColor),
                 valign: 'top',
             });
-        } else if (s.type === 'image') {
-            slide.addText(s.data.heading || '', {
-                x: 0.8, y: 0.4, w: 11.5, h: 0.8,
-                fontSize: 28, fontFace: b.font,
-                color: hex(b.primaryColor),
-                bold: true,
-            });
-            slide.addText(s.data.body || '', {
-                x: 0.8, y: 1.4, w: 5.5, h: 5.2,
-                fontSize: 15, fontFace: b.font,
-                color: hex(b.textColor),
-                valign: 'top',
-            });
-            if (s.data.image) {
-                slide.addImage({
-                    data: s.data.image,
-                    x: 6.8, y: 1.4, w: 5.5, h: 5.0,
-                    sizing: { type: 'contain', w: 5.5, h: 5.0 },
-                });
-            }
         }
     });
 
