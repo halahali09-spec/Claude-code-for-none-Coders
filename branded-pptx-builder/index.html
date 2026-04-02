@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Branded Presentation Builder</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/gh/gitbrent/PptxGenJS@3.12.0/dist/pptxgen.bundle.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- HEADER -->
+        <header>
+            <h1>Branded Presentation Builder</h1>
+            <p class="subtitle">Create beautiful branded presentations in seconds</p>
+        </header>
+
+        <!-- STEP INDICATOR -->
+        <div class="steps">
+            <div class="step active" data-step="1">
+                <span class="step-number">1</span>
+                <span class="step-label">Brand</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="2">
+                <span class="step-number">2</span>
+                <span class="step-label">Slides</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="3">
+                <span class="step-number">3</span>
+                <span class="step-label">Download</span>
+            </div>
+        </div>
+
+        <!-- STEP 1: BRAND SETUP -->
+        <section id="step1" class="panel active">
+            <h2>Set Up Your Brand</h2>
+            <p class="help-text">Choose an existing brand or create a new one. Your brands are saved in your browser.</p>
+
+            <!-- Saved Brands -->
+            <div id="saved-brands-section">
+                <h3>Your Saved Brands</h3>
+                <div id="saved-brands-list" class="brands-grid"></div>
+            </div>
+
+            <hr>
+            <h3 id="brand-form-title">Create New Brand</h3>
+
+            <div class="form-group">
+                <label for="brand-name">Brand Name *</label>
+                <input type="text" id="brand-name" placeholder="e.g. My Company">
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="primary-color">Primary Color</label>
+                    <div class="color-input-row">
+                        <input type="color" id="primary-color" value="#2563EB">
+                        <span class="color-hex" id="primary-hex">#2563EB</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="secondary-color">Secondary Color</label>
+                    <div class="color-input-row">
+                        <input type="color" id="secondary-color" value="#1E40AF">
+                        <span class="color-hex" id="secondary-hex">#1E40AF</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="accent-color">Accent Color</label>
+                    <div class="color-input-row">
+                        <input type="color" id="accent-color" value="#F59E0B">
+                        <span class="color-hex" id="accent-hex">#F59E0B</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="text-color">Text Color</label>
+                    <div class="color-input-row">
+                        <input type="color" id="text-color" value="#1F2937">
+                        <span class="color-hex" id="text-hex">#1F2937</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="bg-color">Background Color</label>
+                    <div class="color-input-row">
+                        <input type="color" id="bg-color" value="#FFFFFF">
+                        <span class="color-hex" id="bg-hex">#FFFFFF</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="brand-font">Font</label>
+                <select id="brand-font">
+                    <option value="Arial">Arial</option>
+                    <option value="Calibri">Calibri</option>
+                    <option value="Helvetica">Helvetica</option>
+                    <option value="Georgia">Georgia</option>
+                    <option value="Times New Roman">Times New Roman</option>
+                    <option value="Verdana">Verdana</option>
+                    <option value="Trebuchet MS">Trebuchet MS</option>
+                    <option value="Tahoma">Tahoma</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="brand-logo">Logo (optional — will appear on every slide)</label>
+                <input type="file" id="brand-logo" accept="image/*">
+                <div id="logo-preview-container" class="hidden">
+                    <img id="logo-preview" alt="Logo preview">
+                    <button id="remove-logo" class="btn-small btn-danger">Remove Logo</button>
+                </div>
+            </div>
+
+            <div class="button-row">
+                <button id="save-brand-btn" class="btn btn-secondary">Save Brand</button>
+                <button id="use-brand-btn" class="btn btn-primary">Use This Brand &rarr;</button>
+            </div>
+        </section>
+
+        <!-- STEP 2: ADD SLIDES -->
+        <section id="step2" class="panel">
+            <div class="step2-header">
+                <h2>Build Your Slides</h2>
+                <div class="active-brand-badge" id="active-brand-badge"></div>
+            </div>
+            <p class="help-text">Add slides one by one. Drag to reorder. Click a slide to edit it.</p>
+
+            <!-- Slide Type Picker -->
+            <div class="slide-types">
+                <button class="slide-type-btn" data-type="title" title="Title Slide">
+                    <div class="slide-type-icon">T</div>
+                    <span>Title Slide</span>
+                </button>
+                <button class="slide-type-btn" data-type="content" title="Content Slide">
+                    <div class="slide-type-icon">&#9776;</div>
+                    <span>Content</span>
+                </button>
+                <button class="slide-type-btn" data-type="bullets" title="Bullet Points">
+                    <div class="slide-type-icon">&bull;&bull;</div>
+                    <span>Bullets</span>
+                </button>
+                <button class="slide-type-btn" data-type="two-column" title="Two Columns">
+                    <div class="slide-type-icon">||</div>
+                    <span>Two Columns</span>
+                </button>
+                <button class="slide-type-btn" data-type="image" title="Image Slide">
+                    <div class="slide-type-icon">&#128247;</div>
+                    <span>Image + Text</span>
+                </button>
+                <button class="slide-type-btn" data-type="thank-you" title="Thank You / End Slide">
+                    <div class="slide-type-icon">&#10084;</div>
+                    <span>Thank You</span>
+                </button>
+            </div>
+
+            <!-- Slide Editor -->
+            <div id="slide-editor" class="hidden">
+                <h3 id="slide-editor-title">Edit Slide</h3>
+                <div id="slide-fields"></div>
+                <div class="button-row">
+                    <button id="slide-done-btn" class="btn btn-primary">Done</button>
+                    <button id="slide-cancel-btn" class="btn btn-ghost">Cancel</button>
+                </div>
+            </div>
+
+            <!-- Slide List -->
+            <div id="slides-list"></div>
+
+            <div class="button-row">
+                <button id="back-to-step1" class="btn btn-ghost">&larr; Change Brand</button>
+                <button id="go-to-step3" class="btn btn-primary" disabled>Preview & Download &rarr;</button>
+            </div>
+        </section>
+
+        <!-- STEP 3: PREVIEW & DOWNLOAD -->
+        <section id="step3" class="panel">
+            <h2>Preview & Download</h2>
+            <p class="help-text">Here's a preview of your slides. Click Download to get your .pptx file.</p>
+
+            <div id="preview-container"></div>
+
+            <div class="button-row">
+                <button id="back-to-step2" class="btn btn-ghost">&larr; Edit Slides</button>
+                <button id="download-btn" class="btn btn-primary btn-large">Download .pptx</button>
+            </div>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
